@@ -748,15 +748,20 @@ class BaseConsumerSensor(BaseSensorOperator):
             if hasattr(self, "_override_rtif"):
                 self._override_rtif(context)
 
-        if status != "failed":
-            return
-
+        # Surface the producer's structured event for this node once -- for success and failure alike,
+        # so the consumer shows the node's status and start/finish times (and the error message on
+        # failure). The producer writes it only at terminal, so this logs exactly once on the deferrable
+        # path; the non-deferrable path logs it in poke.
         dbt_events = get_xcom_val(
             task_instance=context["ti"],
             key=get_dbt_event_xcom_key(self.model_unique_id),
             task_ids=self.producer_task_id,
         )
         _log_dbt_event(dbt_events)
+
+        if status != "failed":
+            return
+
         if reason == WatcherEventReason.NODE_FAILED:
             raise AirflowException(
                 f"dbt {self._resource_label.lower()} '{self.model_unique_id}' failed. Review the producer task '{self.producer_task_id}' logs for details."
