@@ -234,6 +234,9 @@ class DbtProducerWatcherOperator(DbtBuildMixin, DbtLocalBaseOperator):
         # Mutable dict populated lazily from the manifest; shared with the log parser.
         self._dataset_namespace: str | None = None
         self._model_outlet_uris: dict[str, list[str]] = {}
+        # In-memory per-node event buffer shared with the log parser. dbt events accumulate here and
+        # are flushed to XCom once per node (at terminal), instead of one XCom write per event.
+        self._node_event_buffer: dict[str, dict[str, Any]] = {}
         # Mutable set populated by the log parser when dbt emits SkippingDetails
         # or LogSkipBecauseError for a node; subsequent "skipped" terminal events
         # for those unique_ids are rewritten to "failed" so the consumer sensor
@@ -253,6 +256,7 @@ class DbtProducerWatcherOperator(DbtBuildMixin, DbtLocalBaseOperator):
             model_outlet_uris=self._model_outlet_uris,
             dataset_namespace=self._dataset_namespace,
             upstream_failure_skipped_ids=self._upstream_failure_skipped_ids,
+            node_event_buffer=self._node_event_buffer,
         )
 
     def run_subprocess(self, command: list[str], env: dict[str, str], cwd: str, **kwargs: Any) -> Any:
@@ -451,6 +455,7 @@ class DbtProducerWatcherOperator(DbtBuildMixin, DbtLocalBaseOperator):
         self._dataset_namespace = get_dataset_namespace(self.profile_config)
         self._model_outlet_uris.clear()
         self._upstream_failure_skipped_ids.clear()
+        self._node_event_buffer.clear()
 
         task_instance = context.get("ti")
         if task_instance is None:
