@@ -305,6 +305,40 @@ class ProjectConfig:
         return self.manifest_path.exists() if self.manifest_path else False
 
 
+def _redact_profile_contents(profile_contents: str, secret_fields: list[str]) -> str:
+    """Redact values for secret fields in profile YAML content before logging.
+
+    Parses the profile YAML, replaces values for fields listed in ``secret_fields``
+    with ``***``, and returns a redacted YAML string.  If parsing fails the original
+    string is returned unchanged so logging is never blocked.
+    """
+    if not secret_fields:
+        return profile_contents
+
+    try:
+        data = yaml.safe_load(profile_contents)
+    except yaml.YAMLError:
+        return profile_contents
+
+    if not isinstance(data, dict):
+        return profile_contents
+
+    for profile_name, profile_body in data.items():
+        if not isinstance(profile_body, dict):
+            continue
+        outputs = profile_body.get("outputs", {})
+        if not isinstance(outputs, dict):
+            continue
+        for target_name, target_vars in outputs.items():
+            if not isinstance(target_vars, dict):
+                continue
+            for field in secret_fields:
+                if field in target_vars:
+                    target_vars[field] = "***"
+
+    return str(yaml.dump(data, indent=4))
+
+
 @dataclass
 class ProfileConfig:
     """
@@ -383,7 +417,11 @@ class ProfileConfig:
                 profile_name=self.profile_name, target_name=self.target_name, use_mock_values=use_mock_values
             )
             profile_path = create_cache_profile(current_profile_version, profile_contents)
-            logger.info("Profile not found in cache storing and using profile: %s.", profile_path)
+            logger.info(
+                "Profile not found in cache storing and using profile: %s.\n%s",
+                profile_path,
+                _redact_profile_contents(profile_contents, self.profile_mapping.secret_fields),
+            )
             return profile_path
 
     @contextlib.contextmanager
@@ -407,10 +445,13 @@ class ProfileConfig:
                 env_vars = {} if use_mock_values else self.profile_mapping.env_vars
 
                 if desired_profile_path:
+                    redacted = _redact_profile_contents(
+                        profile_contents, self.profile_mapping.secret_fields
+                    )
                     logger.info(
                         "Writing profile to %s with the following contents:\n%s",
                         desired_profile_path,
-                        profile_contents,
+                        redacted,
                     )
                     # write profile_contents to desired_profile_path using yaml library
                     desired_profile_path.write_text(profile_contents)
@@ -418,11 +459,14 @@ class ProfileConfig:
                 else:
                     with tempfile.TemporaryDirectory() as temp_dir:
                         temp_file = Path(temp_dir) / DEFAULT_PROFILES_FILE_NAME
+                        redacted = _redact_profile_contents(
+                            profile_contents, self.profile_mapping.secret_fields
+                        )
                         logger.info(
                             "Creating temporary profiles.yml with use_mock_values=%s at %s with the following contents:\n%s",
                             use_mock_values,
                             temp_file,
-                            profile_contents,
+                            redacted,
                         )
                         temp_file.write_text(profile_contents)
                         yield temp_file, env_vars
